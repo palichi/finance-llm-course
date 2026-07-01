@@ -1,6 +1,9 @@
 """
-KOSPI200 종목 주가 데이터 수집 스크립트
+KOSPI200 종목 주가 데이터 수집 스크립트 (공공데이터포털 FSS API 버전)
 data/kospi200_list.csv → data/stock_prices.csv
+
+FSS API 특성: 종목별 기간 조회, 최대 100건/페이지
+데이터 제공 범위: 2000년 이후
 """
 
 import os
@@ -11,31 +14,32 @@ import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-# 기능 10: ../../.env 에서 API Key 로드
 load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
 
-API_KEY   = os.getenv("FSS_API_KEY", "")
-BASE_URL  = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService"
-DATA_DIR  = os.path.join(os.path.dirname(__file__), "data")
-LIST_CSV  = os.path.join(DATA_DIR, "kospi200_list.csv")
-
+API_KEY    = os.getenv("FSS_API_KEY", "")
+BASE_URL   = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService"
+DATA_DIR   = os.path.join(os.path.dirname(__file__), "data")
+LIST_CSV   = os.path.join(DATA_DIR, "kospi200_list.csv")
 OUTPUT_CSV = os.path.join(DATA_DIR, "stock_prices.csv")
-START_DATE = "20240101"   # 기능 2: 최초 수집 시작일 고정
+START_DATE = "20000101"
+PAGE_ROWS  = 100
+
+NUM_COLS = ["clpr", "vs", "fltRt", "mkp", "hipr", "lopr", "trqu", "trPrc", "lstgStCnt", "mrktTotAmt"]
 
 
-def get_stock_price(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """종목의 주가 데이터를 페이지 단위로 전체 수집"""
+def fetch_stock_range(ticker: str, begin: str, end: str) -> pd.DataFrame:
+    """FSS API - 종목별 기간 주가 조회 (페이징 처리)"""
     all_items = []
     page = 1
 
     while True:
         params = {
             "serviceKey": API_KEY,
-            "numOfRows":  "100",
+            "numOfRows":  str(PAGE_ROWS),
             "pageNo":     str(page),
             "resultType": "json",
-            "beginBasDt": start_date,
-            "endBasDt":   end_date,
+            "beginBasDt": begin,
+            "endBasDt":   end,
             "likeSrtnCd": ticker,
         }
         resp = requests.get(
@@ -53,7 +57,7 @@ def get_stock_price(ticker: str, start_date: str, end_date: str) -> pd.DataFrame
             break
 
         item_list = items.get("item", [])
-        if isinstance(item_list, dict):   # 1건일 때 dict로 옴
+        if isinstance(item_list, dict):
             item_list = [item_list]
 
         all_items.extend(item_list)
@@ -62,110 +66,126 @@ def get_stock_price(ticker: str, start_date: str, end_date: str) -> pd.DataFrame
             break
 
         page += 1
-        time.sleep(0.2)   # 페이지 간 부하 방지
+        time.sleep(0.1)
 
     if not all_items:
         return pd.DataFrame()
 
     df = pd.DataFrame(all_items)
 
-    # 기능 3: srtnCd 앞자리 0 보존
-    df["srtnCd"] = df["srtnCd"].astype(str).str.zfill(6)
+    if "srtnCd" in df.columns:
+        df["srtnCd"] = df["srtnCd"].astype(str).str.zfill(6)
 
-    num_cols = ["clpr", "vs", "mkp", "hipr", "lopr", "trqu", "trPrc", "lstgStCnt", "mrktTotAmt"]
-    for col in num_cols:
+    for col in NUM_COLS:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    if "basDt" in df.columns:
-        df = df.sort_values("basDt").reset_index(drop=True)
 
     return df
 
 
 def main():
-    # 기능 9: API Key 확인
     if not API_KEY:
         print(".env 파일에 FSS_API_KEY 를 입력하세요")
         sys.exit(1)
 
-    # 기능 1: 종목 리스트 파일 확인
     if not os.path.exists(LIST_CSV):
-        print("data/kospi200_list.csv 파일이 없습니다. 종목 리스트를 먼저 준비하세요")
+        print("data/kospi200_list.csv 파일이 없습니다.")
         sys.exit(1)
 
-    # 기능 4: data 폴더 없으면 자동 생성
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    # 기능 1: 종목 리스트 읽기 (srtnCd, itmsNm)
+    # KOSPI200 종목 리스트
     stocks = pd.read_csv(LIST_CSV, encoding="utf-8-sig", dtype=str)
     stocks["srtnCd"] = stocks["srtnCd"].astype(str).str.zfill(6)
-    total_stocks = len(stocks)
+    print(f"KOSPI200 종목 수: {len(stocks)}개")
 
-    # 기존 데이터 로드 (기능 2: 증분 수집용)
+    # 기존 데이터 로드
     if os.path.exists(OUTPUT_CSV):
-        existing = pd.read_csv(OUTPUT_CSV, encoding="utf-8-sig", dtype={"srtnCd": str})
+        existing = pd.read_csv(OUTPUT_CSV, encoding="utf-8-sig", dtype={"srtnCd": str, "basDt": str})
         existing["srtnCd"] = existing["srtnCd"].astype(str).str.zfill(6)
+        existing_keys = set(zip(existing["basDt"], existing["srtnCd"]))
+        existing_by_code = existing.groupby("srtnCd")["basDt"].apply(set).to_dict()
+        print(f"기존 데이터 {len(existing):,}건 로드 "
+              f"(범위: {existing['basDt'].min()} ~ {existing['basDt'].max()})")
     else:
         existing = pd.DataFrame()
+        existing_keys = set()
+        existing_by_code = {}
+        print("기존 데이터 없음. 전체 수집 시작")
 
-    today      = datetime.now().strftime("%Y%m%d")
-    all_frames = [existing] if not existing.empty else []
-    failed     = []
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    print(f"수집 대상 기간: {START_DATE} ~ {yesterday}\n")
+
+    new_frames = []
+    total_stocks = len(stocks)
 
     for i, row in enumerate(stocks.itertuples(index=False), start=1):
         code = row.srtnCd
         name = row.itmsNm
 
-        # 기능 7: 진행 상황 출력
-        print(f"[{i}/{total_stocks}] {name}({code}) 수집 중...")
+        owned = existing_by_code.get(code, set())
 
-        # 기능 2: 시작일 결정 (신규 vs 증분)
-        if not existing.empty and code in existing["srtnCd"].values:
-            last_dt = existing[existing["srtnCd"] == code]["basDt"].max()
-            start   = (datetime.strptime(str(last_dt), "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+        # 수집이 필요한 구간 계산 (누락 구간만)
+        fetch_ranges = []
+        if not owned:
+            fetch_ranges.append((START_DATE, yesterday))
         else:
-            start = START_DATE
+            min_owned = min(owned)
+            max_owned = max(owned)
+            if min_owned > START_DATE:
+                prev = (datetime.strptime(min_owned, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
+                fetch_ranges.append((START_DATE, prev))
+            if max_owned < yesterday:
+                nxt = (datetime.strptime(max_owned, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+                fetch_ranges.append((nxt, yesterday))
 
-        if start > today:
-            print(f"✅ {name}: 이미 최신 데이터")
+        if not fetch_ranges:
+            print(f"[{i}/{total_stocks}] {name}({code}) - 최신 상태")
             continue
 
+        range_desc = ", ".join(f"{b}~{e}" for b, e in fetch_ranges)
+        print(f"[{i}/{total_stocks}] {name}({code}) 조회 중... ({range_desc})", end=" ", flush=True)
+
+        stock_new = []
         try:
-            df = get_stock_price(code, start, today)
-            if df.empty:
-                print(f"⚠️ {name}: 수집 실패 (데이터 없음) - 다음 종목으로 진행")
-                failed.append(code)
+            for begin, end in fetch_ranges:
+                df = fetch_stock_range(code, begin, end)
+                if df.empty:
+                    continue
+                # 이미 보유한 (날짜, 종목) 제거
+                mask = pd.Series(
+                    list(zip(df["basDt"], df["srtnCd"]))
+                ).isin(existing_keys).values
+                df = df[~mask]
+                if not df.empty:
+                    stock_new.append(df)
+
+            if not stock_new:
+                print("신규 없음")
             else:
-                all_frames.append(df)
-                print(f"✅ {name}: {len(df)}건 수집")
+                combined = pd.concat(stock_new, ignore_index=True)
+                new_frames.append(combined)
+                existing_keys.update(zip(combined["basDt"], combined["srtnCd"]))
+                print(f"{len(combined)}건 수집")
+
         except Exception as e:
-            print(f"⚠️ {name}: 수집 실패 ({e}) - 다음 종목으로 진행")
-            failed.append(code)
+            print(f"오류: {e}")
 
-        # 기능 8: 서버 과부하 방지
-        time.sleep(0.5)
+        time.sleep(0.3)
 
-    if not all_frames:
-        print("수집된 데이터가 없습니다.")
+    if not new_frames:
+        print("\n새로운 데이터가 없습니다.")
         return
 
-    # 기능 6: 전체 합치기 + 종목코드·날짜 기준 중복 제거
+    # 기존 + 신규 합치기
+    all_frames = ([existing] if not existing.empty else []) + new_frames
     result = pd.concat(all_frames, ignore_index=True)
     result["srtnCd"] = result["srtnCd"].astype(str).str.zfill(6)
-    result = result.drop_duplicates(subset=["srtnCd", "basDt"])
-    if "basDt" in result.columns:
-        result = result.sort_values(["srtnCd", "basDt"]).reset_index(drop=True)
+    result = result.drop_duplicates(subset=["basDt", "srtnCd"])
+    result = result.sort_values(["srtnCd", "basDt"]).reset_index(drop=True)
 
-    # 기능 4: utf-8-sig 인코딩으로 저장
     result.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
-
-    # 기능 7: 완료 메시지
-    print(f"\n✅ 전체 완료: 총 {len(result):,}건 → {OUTPUT_CSV} 저장")
-
-    # 기능 5: 실패 종목 요약
-    if failed:
-        print(f"⚠️ 수집 실패 종목 ({len(failed)}개): {', '.join(failed)}")
+    print(f"\n완료: 총 {len(result):,}건 → {OUTPUT_CSV} 저장")
 
 
 if __name__ == "__main__":
