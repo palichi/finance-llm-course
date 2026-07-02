@@ -42,14 +42,16 @@ def _build_val_dates(
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        raw = pd.read_csv(data_path, encoding="utf-8-sig", dtype={"srtnCd": str})
+        raw = pd.read_csv(data_path, encoding="utf-8-sig",
+                          dtype={"srtnCd": str, "종목코드": str})
 
-    raw["srtnCd"] = raw["srtnCd"].str.zfill(6)
-    codes = [ticker] if ticker else sorted(raw["srtnCd"].unique())
+    code_col = "srtnCd" if "srtnCd" in raw.columns else "종목코드"
+    raw[code_col] = raw[code_col].str.zfill(6)
+    codes = [ticker] if ticker else sorted(raw[code_col].unique())
 
     pairs: list[tuple[str, str]] = []
     for code in codes:
-        grp = raw[raw["srtnCd"] == code].copy()
+        grp = raw[raw[code_col] == code].copy()
         df  = compute_indicators(grp, nan_policy="drop")
         if df.empty:
             continue
@@ -68,9 +70,11 @@ def _build_val_dates(
 # ---------------------------------------------------------------------------
 
 def _recent_closes(data_path: Path, ticker: str, date_str: str, n: int = 5) -> str:
-    raw = pd.read_csv(data_path, encoding="utf-8-sig", dtype={"srtnCd": str})
-    raw["srtnCd"] = raw["srtnCd"].str.zfill(6)
-    grp = raw[raw["srtnCd"] == ticker].copy()
+    raw = pd.read_csv(data_path, encoding="utf-8-sig",
+                      dtype={"srtnCd": str, "종목코드": str})
+    code_col = "srtnCd" if "srtnCd" in raw.columns else "종목코드"
+    raw[code_col] = raw[code_col].str.zfill(6)
+    grp = raw[raw[code_col] == ticker].copy()
     df  = compute_indicators(grp, nan_policy="drop")
     df  = df[df["date"] <= date_str].tail(n)
     closes = df["close"].tolist()
@@ -128,6 +132,7 @@ def main() -> None:
                 ticker,
                 model_path=model_path,
                 data_path=data_path,
+                as_of=date_str,
             )
         except Exception as e:
             print(f"  [스킵] predict 오류: {e}")

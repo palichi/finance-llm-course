@@ -65,7 +65,7 @@ from train.reward import RewardShaper, RewardConfig
 DEFAULT_CFG: dict = {
     # ── 데이터 ────────────────────────────────────────────────────────
     "data_path"           : "../../day2/03_fss_api/data/stock_prices.csv",
-    "val_date"            : "20260101",  # 미만=train / 이상=val
+    "val_date"            : "20240101",  # 미만=train / 이상=val
     # ── 환경 ──────────────────────────────────────────────────────────
     "tx_cost"             : 0.003,
     "ruin_ratio"          : 0.7,
@@ -114,15 +114,20 @@ def load_and_split(cfg: dict) -> tuple[dict[str, pd.DataFrame], dict[str, pd.Dat
     """
     data_path = ROOT / cfg["data_path"]
     print(f"[data] 로딩: {data_path}")
-    raw = pd.read_csv(data_path, dtype={"srtnCd": str})
+    raw = pd.read_csv(data_path, encoding="utf-8-sig",
+                      dtype={"srtnCd": str, "종목코드": str})
+
+    # 컬럼명 포맷 자동 감지 (구 API형 vs 신규 한국어형)
+    code_col = "srtnCd" if "srtnCd" in raw.columns else "종목코드"
+    raw[code_col] = raw[code_col].astype(str).str.zfill(6)
 
     val_cutoff = int(cfg["val_date"])
     train_data: dict[str, pd.DataFrame] = {}
     val_data  : dict[str, pd.DataFrame] = {}
 
-    codes = sorted(raw["srtnCd"].unique())
+    codes = sorted(raw[code_col].unique())
     for code in codes:
-        group = raw[raw["srtnCd"] == code].copy()
+        group = raw[raw[code_col] == code].copy()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             df = compute_indicators(group, nan_policy="drop")

@@ -321,9 +321,11 @@ def _rerank(
     candidates : dict[str, float],
     query      : str,
     top_k      : int,
+    same_ticker: str | None = None,
 ) -> list[RAGResult]:
     """
     쿼리 임베딩과 각 사례 카드 임베딩의 코사인 유사도로 재정렬.
+    same_ticker 지정 시 같은 종목을 우선 배치하고 나머지로 빈 슬롯을 채운다.
     ChromaDB에서 embeddings를 가져와 재사용 — 추가 모델 forward 없음.
     """
     if not candidates:
@@ -351,9 +353,8 @@ def _rerank(
         fetched["embeddings"],
     ):
         sim   = _cosine(q_emb, np.array(doc_emb))
-        # RRF 점수 + 코사인 유사도 가중 평균
         rrf   = candidates.get(doc_id, 0.0)
-        score = 0.6 * sim + 0.4 * rrf * 100  # 스케일 맞춤
+        score = 0.6 * sim + 0.4 * rrf * 100
         scored.append(RAGResult(
             doc_id   = doc_id,
             card_text= doc,
@@ -362,6 +363,13 @@ def _rerank(
         ))
 
     scored.sort(key=lambda x: x.score, reverse=True)
+
+    # 같은 종목 우선: same_ticker 결과 먼저, 나머지로 빈 슬롯 채움
+    if same_ticker:
+        same = [r for r in scored if r.metadata.get("ticker") == same_ticker]
+        others = [r for r in scored if r.metadata.get("ticker") != same_ticker]
+        scored = same + others
+
     return scored[:top_k]
 
 
@@ -430,6 +438,6 @@ def retrieve(
     if not filtered:
         return []
 
-    # ── 4. Reranking (대표 질의 기준) ─────────────────────────────────
+    # ── 4. Reranking (대표 질의 기준, 같은 종목 우선) ────────────────
     main_query = queries[0]
-    return _rerank(filtered, main_query, top_k)
+    return _rerank(filtered, main_query, top_k, same_ticker=ticker)

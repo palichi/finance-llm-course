@@ -63,8 +63,13 @@ class PredictResult:
 # ---------------------------------------------------------------------------
 
 def _load_stock_df(data_path: Path) -> pd.DataFrame:
-    df = pd.read_csv(data_path, encoding="utf-8-sig", dtype={"srtnCd": str})
-    df["srtnCd"] = df["srtnCd"].astype(str).str.zfill(6)
+    df = pd.read_csv(data_path, encoding="utf-8-sig",
+                     dtype={"srtnCd": str, "종목코드": str})
+    # 컬럼명 포맷 자동 감지 후 종목코드 zero-fill
+    code_col = "srtnCd" if "srtnCd" in df.columns else "종목코드"
+    df[code_col] = df[code_col].astype(str).str.zfill(6)
+    df.attrs["code_col"] = code_col
+    df.attrs["name_col"] = "itmsNm" if "itmsNm" in df.columns else "종목명"
     return df
 
 
@@ -73,20 +78,23 @@ def _resolve_ticker(query: str, raw_df: pd.DataFrame) -> tuple[str, str]:
     종목코드 또는 종목명으로 ticker, name 해석.
     ambiguous하면 첫 번째 매칭 반환.
     """
+    code_col = raw_df.attrs.get("code_col", "srtnCd")
+    name_col = raw_df.attrs.get("name_col", "itmsNm")
+
     # 6자리 코드 직접 매칭
     if query.isdigit():
         query = query.zfill(6)
 
-    # srtnCd 완전 일치
-    if query in raw_df["srtnCd"].values:
-        name = raw_df[raw_df["srtnCd"] == query]["itmsNm"].iloc[0]
+    # 종목코드 완전 일치
+    if query in raw_df[code_col].values:
+        name = raw_df[raw_df[code_col] == query][name_col].iloc[0]
         return query, str(name)
 
-    # itmsNm 부분 일치
-    mask = raw_df["itmsNm"].str.contains(query, na=False)
+    # 종목명 부분 일치
+    mask = raw_df[name_col].str.contains(query, na=False)
     if mask.any():
         row = raw_df[mask].iloc[0]
-        return str(row["srtnCd"]), str(row["itmsNm"])
+        return str(row[code_col]), str(row[name_col])
 
     raise ValueError(
         f"종목 '{query}'를 찾을 수 없습니다. "
@@ -154,6 +162,7 @@ def predict(
     data_path : str | Path | None = None,
     position  : int   = 0,
     unrealized_pnl: float = 0.0,
+    as_of     : str | None = None,
 ) -> PredictResult:
     """
     단일 종목에 대한 PPO 모델 추론.
@@ -170,6 +179,9 @@ def predict(
         현재 포지션 가정 (0=미보유, 1=보유). 기본 0.
     unrealized_pnl : float
         현재 미실현 손익 가정. 기본 0.0.
+    as_of : str | None
+        "YYYY-MM-DD" 형식의 기준일. 지정하면 해당 날짜까지의 데이터만 사용.
+        None이면 전체 데이터(최신일 기준) 사용.
 
     Returns
     -------
@@ -185,7 +197,8 @@ def predict(
     raw_df = _load_stock_df(data_path)
     ticker, name = _resolve_ticker(query, raw_df)
 
-    stock_rows = raw_df[raw_df["srtnCd"] == ticker].copy()
+    code_col   = raw_df.attrs.get("code_col", "srtnCd")
+    stock_rows = raw_df[raw_df[code_col] == ticker].copy()
     if stock_rows.empty:
         raise ValueError(f"'{ticker}' 데이터가 CSV에 없습니다.")
 
@@ -194,6 +207,15 @@ def predict(
     df_ind = compute_indicators(stock_rows, nan_policy="drop")
     if df_ind.empty:
         raise ValueError(f"'{ticker}' 지표 계산 후 유효 데이터 없음 (데이터 부족).")
+
+    # ── as_of 날짜 필터 (과거 시점 재현용) ────────────────────────────
+    if as_of is not None:
+        df_ind = df_ind[df_ind["date"] <= pd.Timestamp(as_of)]
+        if len(df_ind) < LOOKBACK:
+            raise ValueError(
+                f"'{ticker}' as_of={as_of} 기준 유효 데이터 {len(df_ind)}행 "
+                f"— lookback({LOOKBACK}) 이상 필요."
+            )
 
     # ── obs 구성 ───────────────────────────────────────────────────────
     obs = _build_obs(df_ind, position=position, unrealized_pnl=unrealized_pnl)

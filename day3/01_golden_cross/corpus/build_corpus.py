@@ -56,8 +56,8 @@ CHROMA_DIR   = CORPUS_DIR / "chroma_db"
 BM25_PATH    = CORPUS_DIR / "bm25_index.pkl"
 NEWS_CACHE   = CORPUS_DIR / "news_cache"
 DATA_PATH    = ROOT / "../../day2/03_fss_api/data/stock_prices.csv"
-MODEL_PATH   = ROOT / "models/20260628_231252/best_model.zip"
-VAL_DATE     = "20260101"
+MODEL_PATH   = ROOT / "models/20260701_221527/best_model.zip"
+VAL_DATE     = "20240101"
 
 EMBED_MODEL  = "snunlp/KR-SBERT-V40K-klueNLI-augSTS"  # 한국어 특화 SBERT
 COLLECTION   = "trading_cases"
@@ -281,9 +281,12 @@ def build_corpus(
         print(f"[경고] 모델 없음({model_path}) — action='미학습'으로 표기")
 
     # ── 데이터 로드 ────────────────────────────────────────────────────
-    raw = pd.read_csv(data_path, encoding="utf-8-sig", dtype={"srtnCd": str})
-    raw["srtnCd"] = raw["srtnCd"].str.zfill(6)
-    codes = [ticker] if ticker else sorted(raw["srtnCd"].unique())
+    raw = pd.read_csv(data_path, encoding="utf-8-sig",
+                      dtype={"srtnCd": str, "종목코드": str})
+    code_col = "srtnCd" if "srtnCd" in raw.columns else "종목코드"
+    name_col = "itmsNm" if "itmsNm" in raw.columns else "종목명"
+    raw[code_col] = raw[code_col].str.zfill(6)
+    codes = [ticker] if ticker else sorted(raw[code_col].unique())
     if max_stocks:
         codes = codes[:max_stocks]
 
@@ -300,8 +303,8 @@ def build_corpus(
     all_ids  : list[str] = []
 
     for ci, code in enumerate(codes):
-        grp  = raw[raw["srtnCd"] == code].copy()
-        name = grp["itmsNm"].iloc[0] if "itmsNm" in grp.columns else code
+        grp  = raw[raw[code_col] == code].copy()
+        name = grp[name_col].iloc[0] if name_col in grp.columns else code
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             df = compute_indicators(grp, nan_policy="drop")

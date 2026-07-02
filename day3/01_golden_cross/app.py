@@ -16,8 +16,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 DATA_PATH  = ROOT / "../../day2/03_fss_api/data/stock_prices.csv"
-MODEL_PATH = ROOT / "models/20260628_231252/best_model.zip"
-LOOKBACK_CHART = 60   # 차트에 표시할 최근 N일
+MODEL_PATH = ROOT / "models/20260701_221527/best_model.zip"
+LOOKBACK_CHART = 252  # 차트에 표시할 최근 N일 (약 1년)
 
 st.set_page_config(page_title="PPO 매매 판단", page_icon="📈", layout="wide")
 
@@ -28,8 +28,13 @@ st.set_page_config(page_title="PPO 매매 판단", page_icon="📈", layout="wid
 @st.cache_resource
 def _load_raw_df():
     import pandas as pd
-    df = pd.read_csv(DATA_PATH, encoding="utf-8-sig", dtype={"srtnCd": str})
-    df["srtnCd"] = df["srtnCd"].astype(str).str.zfill(6)
+    df = pd.read_csv(DATA_PATH, encoding="utf-8-sig",
+                     dtype={"srtnCd": str, "종목코드": str})
+    code_col = "srtnCd" if "srtnCd" in df.columns else "종목코드"
+    name_col = "itmsNm" if "itmsNm" in df.columns else "종목명"
+    df[code_col] = df[code_col].astype(str).str.zfill(6)
+    df.attrs["code_col"] = code_col
+    df.attrs["name_col"] = name_col
     return df
 
 
@@ -48,13 +53,15 @@ def _search_ticker(query: str, raw_df) -> list[tuple[str, str]]:
     q = query.strip()
     if not q:
         return []
+    code_col = raw_df.attrs.get("code_col", "srtnCd")
+    name_col = raw_df.attrs.get("name_col", "itmsNm")
     if q.isdigit():
         q = q.zfill(6)
-        rows = raw_df[raw_df["srtnCd"] == q]
-        return [(r["srtnCd"], r["itmsNm"]) for _, r in rows.iterrows()]
-    mask = raw_df["itmsNm"].str.contains(q, na=False)
-    dedup = raw_df[mask].drop_duplicates("srtnCd")
-    return [(r["srtnCd"], r["itmsNm"]) for _, r in dedup.iterrows()]
+        rows = raw_df[raw_df[code_col] == q]
+        return [(r[code_col], r[name_col]) for _, r in rows.iterrows()]
+    mask = raw_df[name_col].str.contains(q, na=False)
+    dedup = raw_df[mask].drop_duplicates(code_col)
+    return [(r[code_col], r[name_col]) for _, r in dedup.iterrows()]
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +98,8 @@ def _plot_chart(ticker: str, raw_df, n: int = LOOKBACK_CHART):
     from indicators.technical import compute_indicators
     import warnings
 
-    grp = raw_df[raw_df["srtnCd"] == ticker].copy()
+    code_col = raw_df.attrs.get("code_col", "srtnCd")
+    grp = raw_df[raw_df[code_col] == ticker].copy()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         df = compute_indicators(grp, nan_policy="drop")
@@ -130,8 +138,8 @@ def _plot_chart(ticker: str, raw_df, n: int = LOOKBACK_CHART):
         fig.add_trace(go.Scatter(
             x=golden["date"], y=golden["close"],
             mode="markers", name="골든크로스(매수 시그널)",
-            marker=dict(symbol="triangle-up", size=12, color="lime",
-                        line=dict(color="darkgreen", width=1)),
+            marker=dict(symbol="triangle-up", size=12, color="red",
+                        line=dict(color="darkred", width=1)),
         ))
 
     # 데드크로스 마커 (매도 시그널)
@@ -140,8 +148,8 @@ def _plot_chart(ticker: str, raw_df, n: int = LOOKBACK_CHART):
         fig.add_trace(go.Scatter(
             x=dead["date"], y=dead["close"],
             mode="markers", name="데드크로스(매도 시그널)",
-            marker=dict(symbol="triangle-down", size=12, color="red",
-                        line=dict(color="darkred", width=1)),
+            marker=dict(symbol="triangle-down", size=12, color="blue",
+                        line=dict(color="darkblue", width=1)),
         ))
 
     fig.update_layout(

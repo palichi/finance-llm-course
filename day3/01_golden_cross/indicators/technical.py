@@ -29,6 +29,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 COLUMN_MAP: dict[str, str] = {
+    # 금융위원회 API 원본 컬럼명
     "basDt" : "date",
     "srtnCd": "ticker",
     "itmsNm": "name",
@@ -37,18 +38,31 @@ COLUMN_MAP: dict[str, str] = {
     "lopr"  : "low",
     "clpr"  : "close",
     "trqu"  : "volume",
+    # 한국어 컬럼명 (stock_prices.csv 신규 포맷)
+    "날짜"   : "date",
+    "종목코드" : "ticker",
+    "종목명"  : "name",
+    "시가"   : "open",
+    "고가"   : "high",
+    "저가"   : "low",
+    "종가"   : "close",
+    "거래량"  : "volume",
 }
 
 
 def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     원본 컬럼명 → 표준명 변환. 없는 컬럼은 조용히 건너뜀.
-    date 컬럼이 정수(YYYYMMDD)이면 datetime으로 변환.
+    date 컬럼이 YYYYMMDD(정수/8자리 문자열) 또는 YYYY-MM-DD 모두 처리.
     """
     rename = {k: v for k, v in COLUMN_MAP.items() if k in df.columns}
     df = df.rename(columns=rename)
     if "date" in df.columns and not pd.api.types.is_datetime64_any_dtype(df["date"]):
-        df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
+        date_str = df["date"].astype(str).str.strip()
+        if date_str.str.match(r"^\d{8}$").all():
+            df["date"] = pd.to_datetime(date_str, format="%Y%m%d")
+        else:
+            df["date"] = pd.to_datetime(date_str)
     return df
 
 
